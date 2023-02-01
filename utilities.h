@@ -26,40 +26,6 @@ DWORD remote_get_module_handle( const HANDLE process, std::string& module_name )
 	return 0;
 }
 
-static bool GetRemoteModuleExportDirectory( const HANDLE process, const HMODULE hRemote, PIMAGE_EXPORT_DIRECTORY ExportDirectory, const IMAGE_DOS_HEADER DosHeader, const IMAGE_NT_HEADERS NtHeaders ) {
-
-	auto const export_data = NtHeaders.OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_EXPORT ];
-
-	// cmon bruh
-	if ( export_data.Size <= 0 )
-		return false;
-
-	auto const export_buffer = std::make_unique<uint8_t[ ]>( export_data.Size );
-
-	ReadProcessMemory( process, ( uint8_t* ) hRemote + export_data.VirtualAddress, export_buffer.get( ), export_data.Size, nullptr );
-
-	auto const export_dir = ( PIMAGE_EXPORT_DIRECTORY ) export_buffer.get( );
-
-	// parallel arrays
-	auto const ordinals = ( uint16_t* ) ( &export_buffer[
-		export_dir->AddressOfNameOrdinals - export_data.VirtualAddress ] );
-	auto const name_rvas = ( uint32_t* ) ( &export_buffer[
-		export_dir->AddressOfNames - export_data.VirtualAddress ] );
-	auto const function_rvas = ( uint32_t* ) ( &export_buffer[
-		export_dir->AddressOfFunctions - export_data.VirtualAddress ] );
-
-	// iterate over every export
-	for ( size_t i = 0; i < export_dir->NumberOfNames; ++i ) {
-		// the exported function's name
-		auto const name = ( char const* ) (
-			&export_buffer[ name_rvas[ i ] - export_data.VirtualAddress ] );
-
-		if ( !strcmp( name, "CallNextHookEx" ) )
-			printf( "YES\n" );
-	}
-	return false;
-}
-
 static DWORD GetRemoteFuncAddress( const HANDLE process, std::string& module_name, const char* func ) {
 	HMODULE hRemote = ( HMODULE ) remote_get_module_handle( process, module_name );
 	if ( !hRemote )
