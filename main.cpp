@@ -219,9 +219,12 @@ int main( )
             throw std::exception( "could not set hook procedure" );
 
         PostThreadMessageA( tid, WM_NULL, NULL, NULL );
+        printf( "successfully set hook procedure! unhooking in 5 seconds...\n" );
 
-        printf( "successfully set hook procedure!\n" );
+        Sleep( 5000 );
 
+        UnhookWindowsHookEx( handle );
+        printf( "unhooked, exiting program...\n" );
         system( "pause > nul" );
 
         return EXIT_SUCCESS;
