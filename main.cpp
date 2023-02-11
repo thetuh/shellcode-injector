@@ -21,7 +21,7 @@
 
 extern "C" void* internal_cleancall_wow64_gate{ nullptr };
 
-unsigned char shellcode[ ] = "\x6a\x00\x68\xbb\xbb\xbb\xbb\x68\xcc\xcc\xcc\xcc\x6a\x00\xb8\xff\xff\xff\xff\xff\xd0\xc3";
+unsigned char shellcode[ ] = "\x6a\x00\x68\xbb\xbb\xbb\xbb\x68\xcc\xcc\xcc\xcc\x6a\x00\xb8\xff\xff\xff\xff\xff\xd0\x68\xdd\xdd\xdd\xdd\xb8\xff\xff\xff\xff\xff\xd0\xc3";
 
 bool resolve_module_functions( )
 {
@@ -165,17 +165,49 @@ int main( )
             }
         }
 
+        /* prepare our loader data */
+        loaderdata LoaderParams{ };
+        LoaderParams.ImageBase = target_base;
+        LoaderParams.NtHeaders = ( PIMAGE_NT_HEADERS ) ( ( LPBYTE ) target_base + old_dos->e_lfanew );
+
+        LoaderParams.BaseReloc = ( PIMAGE_BASE_RELOCATION ) ( ( LPBYTE ) target_base
+            + old_nt->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_BASERELOC ].VirtualAddress );
+        LoaderParams.ImportDirectory = ( PIMAGE_IMPORT_DESCRIPTOR ) ( ( LPBYTE ) target_base
+            + old_nt->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ].VirtualAddress );
+
+        LoaderParams.fnLoadLibraryA = LoadLibraryA;
+        LoaderParams.fnGetProcAddress = GetProcAddress;
+
         /* we don't need this anymore, free it */
         binary_data.~vector( );
 
-        /* allocate shellcode memory */
+        /* allocate the loader memory for our dll */
+        void* loader_address{ nullptr };
+        if ( NT_ERROR( NtAllocateVirtualMemory( process_handle, &loader_address, 0, &region_size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE  ) ) )
+        {
+            NtClose( process_handle );
+            throw std::exception( "could not allocate loader memory" );
+        }
+
+        if ( NT_ERROR( NtWriteVirtualMemory( process_handle, loader_address, &LoaderParams, sizeof( loaderdata ), nullptr ) ) )
+        {
+            NtClose( process_handle );
+            throw std::exception( "could not write loader info" );
+        }
+
+        if ( NT_ERROR( NtWriteVirtualMemory( process_handle, ( PVOID ) ( ( loaderdata* ) loader_address + 1 ), LibraryLoader, ( DWORD ) stub - ( DWORD ) LibraryLoader, nullptr ) ) )
+        {
+            NtClose( process_handle );
+            throw std::exception( "could not write loader function" );
+        }
+
+        /* allocate shellcode memory that will call our loader stub */
         region_size = sizeof( shellcode );
         void* shellcode_address{ nullptr };
         if ( NT_ERROR( NtAllocateVirtualMemory( process_handle, &shellcode_address, 0, &region_size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE ) ) )
         {
-            NtFreeVirtualMemory( process_handle, &target_base, &region_size, MEM_RELEASE );
             NtClose( process_handle );
-            throw std::exception( "could not allocate loader virtual memory" );
+            throw std::exception( "could not allocate shellcode memory" );
         }
 
         constexpr char title[ ] = "title";
@@ -185,23 +217,37 @@ int main( )
         region_size = ( strlen( title ) + 1 );
         void* title_address{ nullptr };
         if ( NT_ERROR( NtAllocateVirtualMemory( process_handle, &title_address, 0, &region_size, MEM_COMMIT, PAGE_READWRITE ) ) )
+        {
+            NtClose( process_handle );
             throw std::exception( "could not allocate messagebox title virtual memory" );
+        }
 
         if ( NT_ERROR( NtWriteVirtualMemory( process_handle, title_address, ( LPVOID ) title, region_size, nullptr ) ) )
+        {
+            NtClose( process_handle );
             throw std::exception( "could not write messagebox title" );
+        }
 
         region_size = ( strlen( msg ) + 1 );
         void* msg_address{ nullptr };
         if ( NT_ERROR( NtAllocateVirtualMemory( process_handle, &msg_address, 0, &region_size, MEM_COMMIT, PAGE_READWRITE ) ) )
+        {
+            NtClose( process_handle );
             throw std::exception( "could not allocate messagebox msg virtual memory" );
+        }
 
         if ( NT_ERROR( NtWriteVirtualMemory( process_handle, msg_address, ( LPVOID ) msg, region_size, nullptr ) ) )
+        {
+            NtClose( process_handle );
             throw std::exception( "could not write messagebox caption" );
+        }
 
         /* patch the addresses into the shellcode */
         *( LPVOID* ) ( shellcode + 3 ) = title_address;
         *( LPVOID* ) ( shellcode + 8 ) = msg_address;
         *( DWORD* ) ( shellcode + 15 ) = GetRemoteFuncAddress( process_handle, user32_string, "MessageBoxA" );
+        *( LPVOID* ) ( shellcode + 0x16 ) = loader_address;
+        *( LPVOID* ) ( shellcode + 0x1b ) = ( ( loaderdata* ) loader_address + 1 );
 
         /* write the shellcode to the allocated memory */
         NtWriteVirtualMemory( process_handle, shellcode_address, shellcode, region_size, nullptr );
@@ -210,7 +256,7 @@ int main( )
         const HMODULE dll{ LoadLibraryA( "ntdll.dll" ) };
         
         /* retrieve thread id using window name */
-        const HWND hwnd = FindWindowA( NULL, "ac_client.exe" );
+        const HWND hwnd = FindWindowA( NULL, PROCESS );
         const DWORD tid{ GetWindowThreadProcessId( hwnd, NULL ) };
 
         /* use our shellcode as a hook procedure */
@@ -221,7 +267,7 @@ int main( )
         PostThreadMessageA( tid, WM_NULL, NULL, NULL );
         printf( "successfully set hook procedure! unhooking in 5 seconds...\n" );
 
-        Sleep( 5000 );
+        Sleep( 2500 );
 
         UnhookWindowsHookEx( handle );
         printf( "unhooked, exiting program...\n" );
