@@ -37,29 +37,37 @@ bool resolve_module_functions( )
     if ( !my_handle || my_handle == INVALID_HANDLE_VALUE )
         printf( "could not open handle to own process\n" );
 
-    const DWORD user32_mod_remote{ remote_get_module_handle( my_handle, user32string ) };
-    const DWORD user32_mod{ ( DWORD ) GetModuleHandle( user32string.c_str( ) ) };
-    if ( user32_mod_remote != user32_mod )
+    const auto cleanup = [&]( const char* msg, const bool ret_value = false ) -> bool
     {
-        printf( "incorrect module address\n" );
+        printf( "%s\n", msg );
         CloseHandle( my_handle );
-        return false;
-    }
+        return ret_value;
+    };
+
+    /* since we loaded it, this shouldn't ever happen */
+    const DWORD user32_mod{ ( DWORD ) GetModuleHandle( user32string.c_str( ) ) };
+    if ( !user32_mod )
+        return cleanup( "user32 module not found" );
+
+    const DWORD user32_mod_remote{ remote_get_module_handle( my_handle, user32string ) };
+    if ( !user32_mod_remote )
+        return cleanup( "remote user32 not found" );
+
+    if ( user32_mod_remote != user32_mod )
+        return cleanup( "incorrect module base address" );
+
+    const DWORD call_next_hook{ ( DWORD ) GetProcAddress( GetModuleHandle( user32string.c_str( ) ), "CallNextHookEx" ) };
+    if ( !call_next_hook )
+        return cleanup( "callnexthookex export not found" );
 
     const DWORD call_next_hook_remote{ GetRemoteFuncAddress( my_handle, user32string, "CallNextHookEx" ) };
-    const DWORD call_next_hook{ ( DWORD ) GetProcAddress( GetModuleHandle( user32string.c_str( ) ), "CallNextHookEx" ) };
+    if ( !call_next_hook_remote )
+        return cleanup( "remote callnexthookex not found" );
+
     if ( call_next_hook_remote != call_next_hook )
-    {
-        printf( "incorrect export address\n" );
-        CloseHandle( my_handle );
-        return false;
-    }
+        return cleanup( "incorrect export address" );
 
-    printf( "succeded tests!\n" );
-
-    CloseHandle( my_handle );
-
-    return true;
+    return cleanup( "succeeded tests!", true );
 }
 
 int main( )
